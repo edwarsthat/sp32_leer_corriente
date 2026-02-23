@@ -11,7 +11,14 @@ pub fn enviar(estado: u32) {
         ..Default::default()
     };
 
-    let connection = EspHttpConnection::new(&config).expect("Fallo al crear conexion HTTP");
+    let connection = match EspHttpConnection::new(&config) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Fallo al crear conexion HTTP: {:?}", e);
+            return;
+        }
+    };
+
     let mut client = Client::wrap(connection);
 
     let body = estado.to_string();
@@ -22,14 +29,21 @@ pub fn enviar(estado: u32) {
         ("Content-Length", body_len.as_str()),
     ];
 
-    let mut request = client
-        .request(Method::Post, URL, &headers)
-        .expect("Fallo al abrir request");
+    let mut request = match client.request(Method::Post, URL, &headers) {
+        Ok(r) => r,
+        Err(e) => {
+            log::error!("Fallo al conectar con el servidor: {:?}", e);
+            return;
+        }
+    };
 
-    request
-        .write_all(body.as_bytes())
-        .expect("Fallo al escribir body");
+    if let Err(e) = request.write_all(body.as_bytes()) {
+        log::error!("Fallo al escribir body: {:?}", e);
+        return;
+    }
 
-    let response = request.submit().expect("Fallo al enviar");
-    log::info!("Respuesta: {}", response.status());
+    match request.submit() {
+        Ok(response) => log::info!("Respuesta: {}", response.status()),
+        Err(e) => log::error!("Fallo al enviar: {:?}", e),
+    }
 }

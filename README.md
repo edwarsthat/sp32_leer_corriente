@@ -31,22 +31,25 @@ Crea un archivo `.env` en la raíz del proyecto:
 ```
 WIFI_SSID="nombre_de_tu_red"
 WIFI_PASSWORD="clave_del_wifi"
-SERVER_URL="https://tu-servidor.com/endpoint/"
+SERVER_URL_DEV="http://192.168.x.x:3010/sp32/"
+SERVER_URL_PROD="https://tu-servidor.com/sp32/"
 ```
 
 Las variables se incrustan en el binario en tiempo de compilación. El `.env` está en `.gitignore` y nunca se sube al repositorio.
 
 ## Compilar y flashear
 
-```bash
-# Solo compilar
-cargo build --release
+> Antes de correr cualquier comando, mantén presionado el botón `BOOT` del ESP32, luego presiona y suelta `RESET`, y suelta `BOOT`.
 
-# Compilar y flashear (reemplaza el puerto según corresponda)
+**Desarrollo** (usa `SERVER_URL_DEV`, es el modo por defecto):
+```bash
 cargo espflash flash --release --port /dev/ttyUSB0 --monitor
 ```
 
-> Antes de correr el comando, mantén presionado el botón `BOOT` del ESP32, luego presiona y suelta `RESET`, y suelta `BOOT`.
+**Producción** (usa `SERVER_URL_PROD`):
+```bash
+APP_ENV=prod cargo espflash flash --release --port /dev/ttyUSB0 --monitor
+```
 
 ## Ver logs en tiempo real
 
