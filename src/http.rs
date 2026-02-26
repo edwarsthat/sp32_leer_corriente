@@ -8,6 +8,8 @@ const URL: &str = env!("SERVER_URL");
 pub fn enviar(estado: u32) {
     let config = Configuration {
         crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
+        use_global_ca_store: true,
+        timeout: Some(std::time::Duration::from_secs(30)),
         ..Default::default()
     };
 
