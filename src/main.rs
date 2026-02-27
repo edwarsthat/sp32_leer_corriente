@@ -40,9 +40,9 @@ fn main() {
     log::info!("Estado inicial enviado al servidor: {}", estado_anterior as u32);
 
     loop {
-        let pico = sensor::leer_pico(&mut adc_pin);
-        let corriente = pico > sensor::UMBRAL_CORRIENTE;
-        log::info!("Pico AO: {} mV  |  Maquina: {}", pico, if corriente { "ENCENDIDA" } else { "APAGADA" });
+        let rms = sensor::leer_rms(&mut adc_pin);
+        let corriente = rms > sensor::UMBRAL_CORRIENTE;
+        log::info!("RMS AO: {}  |  Maquina: {}", rms, if corriente { "ENCENDIDA" } else { "APAGADA" });
 
         if corriente != estado_anterior {
             log::info!("Estado cambió: {} -> {}", estado_anterior, corriente);

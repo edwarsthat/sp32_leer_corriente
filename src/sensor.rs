@@ -1,27 +1,39 @@
 use std::borrow::Borrow;
 
 use esp_idf_svc::hal::adc::oneshot::{AdcChannelDriver, AdcDriver};
+use esp_idf_svc::hal::delay::FreeRtos;
 use esp_idf_svc::hal::gpio::ADCPin;
 
-// Umbral en mV: por encima = máquina encendida. Ajustar según logs.
-pub const UMBRAL_CORRIENTE: u16 = 65;
+// Umbral RMS: por encima = máquina encendida. Ajustar según logs.
+pub const UMBRAL_CORRIENTE: u16 = 90;
 
-// Toma 500 muestras en ~5 segundos (una cada 10ms) y retorna el máximo.
-// Con AC a 60Hz el período es 16.7ms, así que muestreamos varias crestas.
-pub fn leer_pico<'d, T, M>(pin: &mut AdcChannelDriver<'d, T, M>) -> u16
+// 4 ciclos a 60 Hz ≈ 67 ms. Muestreamos cada 1 ms → 67 muestras (~16 por ciclo).
+// Calcula RMS-AC = sqrt(Σ((v - media)²) / N). Sin corriente → ~0.
+pub fn leer_rms<'d, T, M>(pin: &mut AdcChannelDriver<'d, T, M>) -> u16
 where
     T: ADCPin,
     M: Borrow<AdcDriver<'d, T::Adc>>,
 {
-    let mut max = 0u16;
-    for _ in 0..500 {
-        let v = pin.read().unwrap_or(0);
-        if v > max {
-            max = v;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+    const N: u32 = 67;
+    let mut muestras = [0u32; 67];
+
+    // Primera pasada: recolectar muestras y calcular media
+    let mut suma: u32 = 0;
+    for m in muestras.iter_mut() {
+        let v = pin.read().unwrap_or(0) as u32;
+        *m = v;
+        suma += v;
+        FreeRtos::delay_ms(1);
     }
-    max
+    let media = suma / N;
+
+    // Segunda pasada: RMS de la componente AC (desviación respecto a la media)
+    let mut suma_cuadrados: u32 = 0;
+    for v in muestras.iter() {
+        let ac = (*v as i32) - (media as i32);
+        suma_cuadrados += (ac * ac) as u32;
+    }
+    ((suma_cuadrados / N) as f32).sqrt() as u16
 }
 
 pub fn hay_corriente<'d, T, M>(pin: &mut AdcChannelDriver<'d, T, M>) -> bool
@@ -29,5 +41,5 @@ where
     T: ADCPin,
     M: Borrow<AdcDriver<'d, T::Adc>>,
 {
-    leer_pico(pin) > UMBRAL_CORRIENTE
+    leer_rms(pin) > UMBRAL_CORRIENTE
 }
