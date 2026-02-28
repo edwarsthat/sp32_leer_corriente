@@ -2,14 +2,19 @@ use embedded_svc::http::client::Client;
 use embedded_svc::http::Method;
 use embedded_svc::io::Write;
 use esp_idf_svc::http::client::{Configuration, EspHttpConnection};
+use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
 
 const URL: &str = env!("SERVER_URL");
 
-pub fn enviar(estado: u32) {
+pub fn wifi_conectado(wifi: &BlockingWifi<EspWifi<'static>>) -> bool {
+    wifi.is_connected().unwrap_or(false)
+}
+
+pub fn enviar(estado: bool, ts: u64) -> bool {
     let config = Configuration {
         crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
         use_global_ca_store: true,
-        timeout: Some(std::time::Duration::from_secs(30)),
+        timeout: Some(std::time::Duration::from_secs(10)),
         ..Default::default()
     };
 
@@ -17,17 +22,17 @@ pub fn enviar(estado: u32) {
         Ok(c) => c,
         Err(e) => {
             log::error!("Fallo al crear conexion HTTP: {:?}", e);
-            return;
+            return false;
         }
     };
 
     let mut client = Client::wrap(connection);
 
-    let body = estado.to_string();
+    let body = format!("{{\"estado\":{},\"ts\":{}}}", estado as u8, ts);
     let body_len = body.len().to_string();
 
     let headers = [
-        ("Content-Type", "text/plain"),
+        ("Content-Type", "application/json"),
         ("Content-Length", body_len.as_str()),
     ];
 
@@ -35,17 +40,29 @@ pub fn enviar(estado: u32) {
         Ok(r) => r,
         Err(e) => {
             log::error!("Fallo al conectar con el servidor: {:?}", e);
-            return;
+            return false;
         }
     };
 
     if let Err(e) = request.write_all(body.as_bytes()) {
         log::error!("Fallo al escribir body: {:?}", e);
-        return;
+        return false;
     }
 
     match request.submit() {
-        Ok(response) => log::info!("Respuesta: {}", response.status()),
-        Err(e) => log::error!("Fallo al enviar: {:?}", e),
+        Ok(response) => {
+            let status = response.status();
+            if status >= 200 && status < 300 {
+                log::info!("Servidor OK: {}", status);
+                true
+            } else {
+                log::error!("Servidor respondio con error HTTP: {}", status);
+                false
+            }
+        }
+        Err(e) => {
+            log::error!("Fallo de red al enviar (DNS/TCP/TLS/timeout): {:?}", e);
+            false
+        }
     }
 }

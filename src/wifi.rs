@@ -8,6 +8,26 @@ use esp_idf_svc::{
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASSWORD");
 
+pub fn reconectar(wifi: &mut BlockingWifi<EspWifi<'static>>) {
+    log::warn!("Intentando reconectar WiFi...");
+    let _ = wifi.disconnect();
+    let _ = wifi.stop();
+    match wifi.start() {
+        Err(e) => {
+            log::error!("Fallo al reiniciar driver WiFi: {:?}", e);
+            return;
+        }
+        Ok(_) => {}
+    }
+    match wifi.connect() {
+        Ok(_) => match wifi.wait_netif_up() {
+            Ok(_) => log::info!("WiFi reconectado"),
+            Err(e) => log::error!("Fallo al esperar red tras reconexion: {:?}", e),
+        },
+        Err(e) => log::error!("Fallo al reconectar WiFi: {:?}", e),
+    }
+}
+
 pub fn connect(
     modem: impl Peripheral<P = Modem> + 'static,
     sysloop: EspSystemEventLoop,
