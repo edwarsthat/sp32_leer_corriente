@@ -5,16 +5,16 @@ use esp_idf_svc::http::client::{Configuration, EspHttpConnection};
 use esp_idf_svc::wifi::{BlockingWifi, EspWifi};
 
 const URL: &str = env!("SERVER_URL");
+const API_KEY: &str = env!("API_KEY");
 
 pub fn wifi_conectado(wifi: &BlockingWifi<EspWifi<'static>>) -> bool {
     wifi.is_connected().unwrap_or(false)
 }
 
-pub fn enviar(estado: bool, ts: u64) -> bool {
+pub fn enviar(estado: bool, rms: u16, ts: u64) -> bool {
     let config = Configuration {
         crt_bundle_attach: Some(esp_idf_svc::sys::esp_crt_bundle_attach),
-        use_global_ca_store: true,
-        timeout: Some(std::time::Duration::from_secs(10)),
+        timeout: Some(std::time::Duration::from_secs(20)),
         ..Default::default()
     };
 
@@ -28,12 +28,13 @@ pub fn enviar(estado: bool, ts: u64) -> bool {
 
     let mut client = Client::wrap(connection);
 
-    let body = format!("{{\"estado\":{},\"ts\":{}}}", estado as u8, ts);
+    let body = format!("{{\"estado\":{},\"rms\":{},\"ts\":{}}}", estado as u8, rms, ts);
     let body_len = body.len().to_string();
 
     let headers = [
         ("Content-Type", "application/json"),
         ("Content-Length", body_len.as_str()),
+        ("Authorization", API_KEY),
     ];
 
     let mut request = match client.request(Method::Post, URL, &headers) {

@@ -40,6 +40,9 @@ fn main() {
             "Modo seguro: {} reinicios fallidos consecutivos. Revisa el hardware del sensor.",
             reinicios
         );
+        // Resetear contador: el modo seguro es una pausa, no un bloqueo permanente.
+        // El próximo reset manual podrá intentar arrancar de nuevo.
+        nvs_boot.set_u8("reinicios", 0).ok();
         loop {
             std::thread::sleep(std::time::Duration::from_secs(60));
         }
@@ -48,14 +51,31 @@ fn main() {
     nvs_boot.set_u8("reinicios", reinicios + 1).ok();
     log::info!("Reinicio de arranque {}/3", reinicios + 1);
 
-    let mut wifi = wifi::connect(peripherals.modem, sysloop, nvs);
+    let mut wifi = match wifi::connect_with_retry(peripherals.modem, sysloop, nvs.clone()) {
+        Ok(w) => w,
+        Err(e) => {
+            log::error!("No se pudo establecer conexión WiFi tras 3 intentos: {:?}", e);
+            log::error!("Entrando en modo de espera segura. Reinicia el dispositivo para reintentar.");
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+            }
+        }
+    };
 
     let sntp = EspSntp::new_default().expect("Fallo al iniciar SNTP");
     log::info!("Esperando sincronizacion NTP...");
+    let mut intentos_ntp = 0u8;
     while sntp.get_sync_status() != SyncStatus::Completed {
         std::thread::sleep(std::time::Duration::from_millis(500));
+        intentos_ntp += 1;
+        if intentos_ntp >= 60 {
+            log::warn!("NTP no sincronizó en 30s, continuando con timestamp 0");
+            break;
+        }
     }
-    log::info!("Hora sincronizada: {}", now_unix());
+    if sntp.get_sync_status() == SyncStatus::Completed {
+        log::info!("Hora sincronizada: {}", now_unix());
+    }
 
     let ip_info = wifi
         .wifi()
@@ -64,7 +84,7 @@ fn main() {
         .expect("Fallo al obtener informacion de IP");
     log::info!("Dirección IP asignada: {}", ip_info.ip);
 
-    let (tx, rx) = mpsc::channel::<Result<bool, sensor::SensorError>>();
+    let (tx, rx) = mpsc::channel::<Result<(bool, u16), sensor::SensorError>>();
 
     // Hilo del sensor: lee ADC y envía por canal solo cuando cambia el estado
     let adc1 = peripherals.adc1;
@@ -94,7 +114,7 @@ fn main() {
             // Suscribir este hilo al watchdog de hardware
             unsafe { esp_idf_svc::sys::esp_task_wdt_add(std::ptr::null_mut()) };
 
-            let mut estado = match sensor::hay_corriente(&mut adc_pin) {
+            let (corriente_inicial, rms_inicial) = match sensor::hay_corriente(&mut adc_pin) {
                 Ok(c) => c,
                 Err(e) => {
                     log::error!("Fallo al leer estado inicial del sensor: {:?}", e);
@@ -103,7 +123,8 @@ fn main() {
                     return;
                 }
             };
-            tx.send(Ok(estado)).ok(); // enviar estado inicial al hilo HTTP
+            let mut estado = corriente_inicial;
+            tx.send(Ok((corriente_inicial, rms_inicial))).ok(); // enviar estado inicial
 
             loop {
                 let rms = match sensor::leer_rms(&mut adc_pin){
@@ -125,7 +146,7 @@ fn main() {
 
                 if corriente != estado {
                     estado = corriente;
-                    tx.send(Ok(corriente)).ok();
+                    tx.send(Ok((corriente, rms))).ok();
                 }
             }
         })
@@ -136,32 +157,41 @@ fn main() {
 
     // Hilo principal: gestiona cola de envío independientemente del sensor
     let mut sensor_ok = false;
-    let mut cola: VecDeque<(bool, u64)> = VecDeque::new();
+    let mut cola: VecDeque<(bool, u16, u64)> = VecDeque::new();
     loop {
         // Esperar nuevo evento del sensor hasta 5 segundos
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
-            Ok(Ok(corriente)) => {
+            Ok(Ok((corriente, rms))) => {
                 if !sensor_ok {
                     nvs_boot.set_u8("reinicios", 0).ok();
                     sensor_ok = true;
                     log::info!("Sensor OK, contador de reinicios reseteado");
+                    log::info!(
+                        "Estado inicial al arranque: {} (RMS={})",
+                        if corriente { "ENCENDIDA" } else { "APAGADA" },
+                        rms
+                    );
+                } else {
+                    log::info!(
+                        "Estado cambió: {} (RMS={})",
+                        if corriente { "ENCENDIDA" } else { "APAGADA" },
+                        rms
+                    );
                 }
-                log::info!(
-                    "Estado cambió: {}",
-                    if corriente { "ENCENDIDA" } else { "APAGADA" }
-                );
                 if cola.len() >= 50 {
                     cola.pop_front();
                     log::warn!("Cola llena, descartando evento mas antiguo");
                 }
-                cola.push_back((corriente, now_unix()));
+                cola.push_back((corriente, rms, now_unix()));
             }
             Ok(Err(e)) => {
                 log::error!("Error en hilo sensor: {:?}", e);
                 unsafe { esp_idf_svc::sys::esp_restart() };
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Sin nuevo evento, pero intentamos vaciar la cola igualmente
+                if !cola.is_empty() {
+                    log::info!("Cola: {} evento(s) pendiente(s)", cola.len());
+                }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 log::error!("Canal del sensor cerrado, reiniciando...");
@@ -170,7 +200,7 @@ fn main() {
         }
 
         // Intentar vaciar la cola siempre, haya o no nuevo evento
-        while let Some(&(estado, ts)) = cola.front() {
+        while let Some(&(estado, rms, ts)) = cola.front() {
             if !http::wifi_conectado(&wifi) {
                 wifi::reconectar(&mut wifi);
                 if !http::wifi_conectado(&wifi) {
@@ -178,7 +208,7 @@ fn main() {
                     break;
                 }
             }
-            if http::enviar(estado, ts) {
+            if http::enviar(estado, rms, ts) {
                 cola.pop_front();
             } else {
                 log::warn!("Fallo al enviar, {} eventos pendientes en cola", cola.len());

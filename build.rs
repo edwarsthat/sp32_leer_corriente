@@ -8,7 +8,7 @@ fn main() {
         println!("cargo:rustc-env=SERVER_URL={}", val);
     }
 
-    for var in ["WIFI_SSID", "WIFI_PASSWORD"] {
+    for var in ["WIFI_SSID", "WIFI_PASSWORD", "API_KEY"] {
         if let Ok(val) = std::env::var(var) {
             println!("cargo:rustc-env={}={}", var, val);
         }

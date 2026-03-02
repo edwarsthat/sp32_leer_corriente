@@ -21,22 +21,28 @@ where
     T: ADCPin,
     M: Borrow<AdcDriver<'d, T::Adc>>,
 {
-    const N: u32 = 67;
+    const CICLOS: u32 = 4;
+    const HZ: u32 = 60;
+    const N: u32 = CICLOS * 1000 / HZ; // = 66, más explícito
     let mut muestras = [0u32; N as usize];
 
     // Primera pasada: recolectar muestras y calcular media
     let mut suma: u32 = 0;
-    let mut errores:u8 = 0;
+    let mut errores: u8 = 0;
+    let mut ultimo: u32 = 0;
     for m in muestras.iter_mut() {
         let v = match pin.read() {
-            Ok(val) => val as u32,
+            Ok(val) => {
+                ultimo = val as u32;
+                ultimo
+            }
             Err(e) => {
                 log::error!("Fallo al leer ADC: {:?}", e);
                 errores += 1;
                 if errores >= 5 {
                     return Err(SensorError::AdcRead);
                 }
-                UMBRAL_CORRIENTE as u32 // Si falla, asumimos 0 para no interrumpir el cálculo
+                ultimo // repite la última muestra válida
             }
         };
         *m = v;
@@ -54,11 +60,13 @@ where
     Ok(((suma_cuadrados / N as u64) as f32).sqrt() as u16)
 }
 
-pub fn hay_corriente<'d, T, M>(pin: &mut AdcChannelDriver<'d, T, M>) -> Result<bool, SensorError>
+pub fn hay_corriente<'d, T, M>(
+    pin: &mut AdcChannelDriver<'d, T, M>,
+) -> Result<(bool, u16), SensorError>
 where
     T: ADCPin,
     M: Borrow<AdcDriver<'d, T::Adc>>,
 {
     let rms = leer_rms(pin)?;
-    Ok(rms > UMBRAL_CORRIENTE)
+    Ok((rms > UMBRAL_CORRIENTE, rms))
 }
