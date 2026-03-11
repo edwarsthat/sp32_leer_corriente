@@ -43,22 +43,25 @@ fn main() {
         // Resetear contador: el modo seguro es una pausa, no un bloqueo permanente.
         // El próximo reset manual podrá intentar arrancar de nuevo.
         nvs_boot.set_u8("reinicios", 0).ok();
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(60));
-        }
+        log::warn!("Esperando 5 minutos antes de reintentar...");
+        std::thread::sleep(std::time::Duration::from_secs(300));
+        unsafe { esp_idf_svc::sys::esp_restart() };
     }
 
     nvs_boot.set_u8("reinicios", reinicios + 1).ok();
     log::info!("Reinicio de arranque {}/3", reinicios + 1);
 
     let mut wifi = match wifi::connect_with_retry(peripherals.modem, sysloop, nvs.clone()) {
-        Ok(w) => w,
+        Ok(w) => {
+            nvs_boot.set_u8("reinicios", 0).ok();
+            log::info!("WiFi OK, contador de reinicios reseteado");
+            w
+        }
         Err(e) => {
             log::error!("No se pudo establecer conexión WiFi tras 3 intentos: {:?}", e);
-            log::error!("Entrando en modo de espera segura. Reinicia el dispositivo para reintentar.");
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(60));
-            }
+            log::warn!("Esperando 5 minutos antes de reintentar...");
+            std::thread::sleep(std::time::Duration::from_secs(300));
+            unsafe { esp_idf_svc::sys::esp_restart() };
         }
     };
 
@@ -155,10 +158,21 @@ fn main() {
             unsafe { esp_idf_svc::sys::esp_restart() }
         });
 
+    // Registrar hilo principal en el watchdog (timeout 60s > timeout HTTP 20s)
+    unsafe {
+        esp_idf_svc::sys::esp_task_wdt_reconfigure(&esp_idf_svc::sys::esp_task_wdt_config_t {
+            timeout_ms: 60_000,
+            idle_core_mask: 0,
+            trigger_panic: true,
+        });
+        esp_idf_svc::sys::esp_task_wdt_add(std::ptr::null_mut());
+    }
+
     // Hilo principal: gestiona cola de envío independientemente del sensor
     let mut sensor_ok = false;
     let mut cola: VecDeque<(bool, u16, u64)> = VecDeque::new();
     loop {
+        unsafe { esp_idf_svc::sys::esp_task_wdt_reset() };
         // Esperar nuevo evento del sensor hasta 5 segundos
         match rx.recv_timeout(std::time::Duration::from_secs(5)) {
             Ok(Ok((corriente, rms))) => {
